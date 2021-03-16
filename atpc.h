@@ -96,7 +96,14 @@ typedef void (*atpc_list_remove_t)(void *list, void *item);
  */
 typedef void *(*atpc_list_next_t)(void *list);
 
-typedef void (*log_t)(const char *aFormat, ...);
+/*!
+ * @brief   Get the current time.
+ *
+ * @return  current time in microseconds.
+ */
+typedef uint64_t (*atpc_get_time_t)(void);
+
+typedef void (*atpc_log_t)(const char *aFormat, ...);
 
 /* ATPC callbacks structure */
 typedef struct {
@@ -105,12 +112,13 @@ typedef struct {
     atpc_list_add_t list_add;
     atpc_list_remove_t list_remove;
     atpc_list_next_t list_next;
-    log_t log;
+    atpc_get_time_t get_time;
+    atpc_log_t log;
 } atpc_callbacks_t;
 
 /*!
- * @brief   Initializes ATPC providing the necessary callbacks and transmission
- *          information.
+ * @brief   Configure and start ATPC providing the necessary callbacks and
+ *          transmission information.
  *
  * @param   callbacks - pointer to structure containing custom ATPC functions
  *          provided by external application.
@@ -118,21 +126,38 @@ typedef struct {
  * @param   tx_power - pointer to array of possible transmit power values in the
  *          unit used by the platform.
  * @param   tx_power_count - number of possible transmit power values.
- * @param   rssi_threshold - 
- * @param   rssi_threshold_tolerance -
+ * @param   rssi_setpoint - RSSI setpoint for the control model. 
+ * @param   rssi_threshold_upper - upper value of RSSI threshold range for the
+ *          control model. 
+ * @param   rssi_threshold_lower - lower value of RSSI threshold range for the
+ *          control model.
+ * @param   multicast_addr - address to send multicast beacons.
+ * @param   beacon_timeout - maximum time to wait for a beacon response (in
+ *          microseconds.
  */
-void atpc_init( atpc_callbacks_t *callbacks,
-                bool active,
+void atpc_conf( atpc_callbacks_t *callbacks,
                 int8_t default_tx_power,
                 int8_t *tx_power,
                 uint8_t tx_power_count,
-                int8_t rssi_threshold,
-                uint8_t rssi_threshold_tolerance );
+                int8_t rssi_setpoint,
+                int8_t rssi_threshold_upper,
+                int8_t rssi_threshold_lower,
+                uint16_t multicast_addr,
+                uint64_t beacon_timeout );
 
 /*!
- * @brief   Process ATPC states. Must be called by external application 
- *          periodically or during every relevant event in order to execute
- *          ATPC internal finite state machine.
+ * @brief   Initialize ATPC beacons. Must be called after atpc_conf and may not 
+ *          be necessary in case of a full function device (FFD) that only
+ *          monitors messages from reduced function devices (RFDs), replying
+ *          with ATPC notifications. Application should manage the timing of the
+ *          initialization of devices.
+ */
+void atpc_init(void);
+
+/*!
+ * @brief   Process ATPC states. Must be called after atpc_init by external 
+ *          application periodically or during every relevant event in order to
+ *          update models.
  */
 void atpc_process(void);
 
