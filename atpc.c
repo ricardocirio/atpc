@@ -57,15 +57,9 @@ typedef struct {
     bool status;
     /* Update model flag: set to 1 when control model needs to be updated */
     bool update_model;
-    /* Indicate that there is an initialization beacon in progress */
-    bool beacon_active;
     /* Status of each possible transmission power distributed as a bit field
      * vector of size multiple of the uint8_t size. */
     uint8_t *tp_status;
-    /* Variable to keep track of initialization beacons. Indicates the index of
-       the current beacon being processed for a neighbor, corresponding to the
-       transmit power value array. */
-    uint8_t beacon_count;
     /* RSSI vector for values measured by neighbor corresponding to the beacon
        sent at each transmission power */
     int8_t *rssi;
@@ -74,8 +68,6 @@ typedef struct {
     int8_t delta_rssi;
     /* Transmit power control model */
     control_model_t control_model;
-    /* Timestamp of when last beacon was sent (in microseconds) */
-    uint64_t beacon_timestamp;
 } atpc_neighbor_t;
 
 /* ATPC data structure */
@@ -88,6 +80,12 @@ typedef struct {
     atpc_callbacks_t *cb;
     /* Message buffer */
     atpc_msg_t msg;
+    /* Variable to keep track of initialization beacons. Indicates the index of
+       the current beacon being processed, corresponding to the array of 
+       possible transmit power values. */
+    uint8_t beacon_idx;
+    /* Keep tracked of number of beacon responses for each beacon. */
+    uint8_t num_beacon_rsp;
     /* Default transmit power level */
     int8_t default_tx_power;
     /* Pointer to array of possible transmit power values */
@@ -104,6 +102,8 @@ typedef struct {
     uint16_t multicast_addr;
     /* Maximum time to wait for a beacon response */
     uint64_t beacon_timeout;
+    /* Timestamp of when last beacon was sent (in microseconds) */
+    uint64_t beacon_timestamp;
 } atpc_data_t;
 
 /* FSM states */
@@ -177,6 +177,8 @@ void atpc_conf( atpc_callbacks_t *callbacks,
 }
 
 void atpc_init(void) {
+    atpc.beacon_idx = 0;
+    atpc.num_beacon_rsp = atpc.neighbor_count;
     state = STATE_INIT;
 }
 
@@ -215,8 +217,8 @@ int8_t atpc_remove_neighbor(uint16_t short_addr) {
     atpc.cb->list_remove(atpc.list, (void *)neighbor);
     free(neighbor->rssi);
     free(neighbor->tp_status);
-    free(neighbor);
-
+    free(neighbor); 
+    atpc.neighbor_count--;
     return 1;
 }
 
@@ -259,7 +261,7 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
     /* Process ATPC message */
     switch(ind->data->type) {
         case ATPC_BEACON_IND: {
-            atpc.cb->log("[atpc] BEACON_IND: src_addr: %d, "
+            atpc.cb->log("[atpc] BEACON_IND: src_addr: %x, "
                         "power level: %d dBm, rssi: %d dBm",
                         ind->src_addr, ind->data->power_level, ind->rssi);
             atpc.msg.type = ATPC_BEACON_RSP;
@@ -271,7 +273,7 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
         }
         
         case ATPC_BEACON_RSP: {
-            atpc.cb->log("[atpc] BEACON_RSP: src_addr: %d, "
+            atpc.cb->log("[atpc] BEACON_RSP: src_addr: %x, "
                         "power level %d dBm, rssi %d dBm", ind->src_addr,
                         ind->data->power_level, ind->data->rssi);
             int8_t tp_idx = find_tp_idx(ind->data->power_level);
@@ -279,15 +281,14 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
                 neighbor->rssi[tp_idx] = ind->data->rssi;
                 neighbor->tp_status[tp_idx / 8] |= (1 << (tp_idx % 8));
             }
-            neighbor->beacon_active = false;
-            neighbor->beacon_count++;
+            atpc.num_beacon_rsp++;
             break;
         }
 
         case ATPC_QUALITY_MONITOR: {
             if(ind->rssi > atpc.rssi_threshold_upper ||
                ind->rssi < atpc.rssi_threshold_lower) {
-                atpc.cb->log("[atpc] QUALITY_MONITOR: src_addr: %d, "
+                atpc.cb->log("[atpc] QUALITY_MONITOR: src_addr: %x, "
                         "rssi %d dBm", ind->src_addr, ind->rssi);
                 atpc.msg.type = ATPC_NOTIFICATION;
                 atpc.msg.rssi = atpc.rssi_setpoint - ind->rssi;
@@ -299,10 +300,12 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
         }
 
         case ATPC_NOTIFICATION: {
-            atpc.cb->log("[atpc] NOTIFICATION: src_addr: %d, "
+            if(neighbor->status) {
+                atpc.cb->log("[atpc] NOTIFICATION: src_addr: %x, "
                         "delta_rssi %d dBm", ind->src_addr, ind->data->rssi);
-            neighbor->delta_rssi = ind->data->rssi;
-            neighbor->update_model = true;
+                neighbor->delta_rssi = ind->data->rssi;
+                neighbor->update_model = true;
+            }
             break;
         }
 
@@ -359,41 +362,30 @@ static void state_idle(void) {
 }
 
 static void state_init(void) {
-    for(uint8_t i = 0; i < atpc.neighbor_count; i++) {
-        atpc_neighbor_t *neighbor = 
-                            (atpc_neighbor_t *)atpc.cb->list_next(atpc.list);
-
-        if(neighbor->beacon_active == true) {
-            if((atpc.cb->get_time() - neighbor->beacon_timestamp) <
-                atpc.beacon_timeout) {
-                /* Keep waiting for beacon response */
-                return;
-            } else {
-                /* Timeout, proceed to next beacon */
-                atpc.cb->log("[atpc] Beacon response timeout.");
-                neighbor->beacon_active = false;
-                neighbor->beacon_count++;
-            }
+    if(atpc.num_beacon_rsp < atpc.neighbor_count) {
+        if((atpc.cb->get_time() - atpc.beacon_timestamp) <
+            atpc.beacon_timeout) {
+            /* Keep waiting for beacon responses */
+            return;
         }
+        /* Timeout, proceed to next beacon */
+        atpc.cb->log("[atpc] Beacon response timeout.");
+    }
 
-        if(neighbor->status == false) {
-            if(neighbor->beacon_count < atpc.tx_power_count) {
-                atpc.cb->log("[atpc] sending beacon %d, power level %d dBm",
-                            neighbor->beacon_count,
-                            atpc.tx_power[neighbor->beacon_count]);
-                atpc.msg.type = ATPC_BEACON_IND;
-                atpc.msg.power_level = atpc.tx_power[neighbor->beacon_count];
-                atpc.cb->send_msg(neighbor->short_addr,
-                                  atpc.tx_power[neighbor->beacon_count],
-                                  (uint8_t *)&atpc.msg, sizeof(atpc_msg_t));
-                neighbor->beacon_timestamp = atpc.cb->get_time();
-                neighbor->beacon_active = true;
-                state = STATE_INIT;
-            } else if(neighbor->beacon_active == false) {
-                state = STATE_RUN;
-            }
-        }
-    }}
+    if(atpc.beacon_idx < atpc.tx_power_count) {
+        atpc.cb->log("[atpc] sending beacon %d, power level %d dBm",
+                      atpc.beacon_idx, atpc.tx_power[atpc.beacon_idx]);
+        atpc.msg.type = ATPC_BEACON_IND;
+        atpc.msg.power_level = atpc.tx_power[atpc.beacon_idx];
+        atpc.cb->send_msg(atpc.multicast_addr, atpc.tx_power[atpc.beacon_idx],
+                          (uint8_t *)&atpc.msg, sizeof(atpc_msg_t));
+        atpc.beacon_timestamp = atpc.cb->get_time();
+        atpc.num_beacon_rsp = 0;
+        atpc.beacon_idx++;
+        state = STATE_INIT;
+    } else {
+        state = STATE_RUN;
+    }
 }
 
 static void state_run(void) {
