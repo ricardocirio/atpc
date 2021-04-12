@@ -26,6 +26,9 @@
  Constants and definitions
  *****************************************************************************/
 
+#define DEBUG
+#undef DEBUG
+
 /* Number of bits of fractional part of Qm.n format numbers */
 #define Q   3 // Q.3 format number
 
@@ -106,23 +109,11 @@ typedef struct {
     uint64_t beacon_timestamp;
 } atpc_data_t;
 
-/* FSM states */
-typedef enum {
-    STATE_IDLE,
-    STATE_INIT,
-    STATE_RUN,
-    NUM_STATES
-} state_t;
-
 /* Definition of FSM state function vector */
 typedef struct {
     state_t state;
     void (*func)(void);
 } fsm_t;
-
-/******************************************************************************
- Global variables
- *****************************************************************************/
 
 /******************************************************************************
  Local function prototypes
@@ -180,6 +171,7 @@ void atpc_init(void) {
     atpc.beacon_idx = 0;
     atpc.num_beacon_rsp = atpc.neighbor_count;
     state = STATE_INIT;
+    atpc.cb->state_change(STATE_INIT);
 }
 
 void atpc_process(void) {
@@ -261,9 +253,11 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
     /* Process ATPC message */
     switch(ind->data->type) {
         case ATPC_BEACON_IND: {
+#ifdef DEBUG
             atpc.cb->log("[atpc] BEACON_IND: src_addr: %x, "
                         "power level: %d dBm, rssi: %d dBm",
                         ind->src_addr, ind->data->power_level, ind->rssi);
+#endif
             atpc.msg.type = ATPC_BEACON_RSP;
             atpc.msg.power_level = ind->data->power_level;
             atpc.msg.rssi = ind->rssi;
@@ -273,9 +267,11 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
         }
         
         case ATPC_BEACON_RSP: {
+#ifdef DEBUG
             atpc.cb->log("[atpc] BEACON_RSP: src_addr: %x, "
                         "power level %d dBm, rssi %d dBm", ind->src_addr,
                         ind->data->power_level, ind->data->rssi);
+#endif
             int8_t tp_idx = find_tp_idx(ind->data->power_level);
             if(tp_idx >= 0) {
                 neighbor->rssi[tp_idx] = ind->data->rssi;
@@ -288,12 +284,13 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
         case ATPC_QUALITY_MONITOR: {
             if(ind->rssi > atpc.rssi_threshold_upper ||
                ind->rssi < atpc.rssi_threshold_lower) {
+#ifdef DEBUG
                 atpc.cb->log("[atpc] QUALITY_MONITOR: src_addr: %x, "
                         "rssi %d dBm", ind->src_addr, ind->rssi);
+#endif
                 atpc.msg.type = ATPC_NOTIFICATION;
                 atpc.msg.rssi = atpc.rssi_setpoint - ind->rssi;
-                atpc.cb->send_msg(neighbor->short_addr,
-                                  atpc_get_tx_power(ind->src_addr),
+                atpc.cb->send_msg(neighbor->short_addr, atpc.default_tx_power,
                                   (uint8_t *)&atpc.msg, sizeof(atpc_msg_t));
             } 
             break;
@@ -301,8 +298,10 @@ void atpc_data_ind(atpc_data_ind_t *ind) {
 
         case ATPC_NOTIFICATION: {
             if(neighbor->status) {
+#ifdef DEBUG
                 atpc.cb->log("[atpc] NOTIFICATION: src_addr: %x, "
                         "delta_rssi %d dBm", ind->src_addr, ind->data->rssi);
+#endif
                 neighbor->delta_rssi = ind->data->rssi;
                 neighbor->update_model = true;
             }
@@ -369,12 +368,16 @@ static void state_init(void) {
             return;
         }
         /* Timeout, proceed to next beacon */
+#ifdef DEBUG
         atpc.cb->log("[atpc] Beacon response timeout.");
+#endif
     }
 
     if(atpc.beacon_idx < atpc.tx_power_count) {
+#ifdef DEBUG
         atpc.cb->log("[atpc] sending beacon %d, power level %d dBm",
                       atpc.beacon_idx, atpc.tx_power[atpc.beacon_idx]);
+#endif
         atpc.msg.type = ATPC_BEACON_IND;
         atpc.msg.power_level = atpc.tx_power[atpc.beacon_idx];
         atpc.cb->send_msg(atpc.multicast_addr, atpc.tx_power[atpc.beacon_idx],
@@ -385,6 +388,7 @@ static void state_init(void) {
         state = STATE_INIT;
     } else {
         state = STATE_RUN;
+        atpc.cb->state_change(STATE_RUN);
     }
 }
 
@@ -408,24 +412,32 @@ static void state_run(void) {
                 }
             }
 
-            int32_t denominator =   q_mul(num_tp << Q, sum_tp_squared << Q) -
-                                    q_mul(sum_tp << Q, sum_tp << Q);
+            int32_t denominator =   q_mul(sum_tp << Q, sum_tp << Q) -
+                                    q_mul(num_tp << Q, sum_tp_squared << Q);
 
             neighbor->control_model.a =
-                            q_div(  q_mul(num_tp << Q, sum_tp_ri << Q) -
-                                    q_mul(sum_tp << Q, sum_ri << Q),
+                            q_div(  q_mul(sum_tp << Q, sum_ri << Q) -
+                                    q_mul(num_tp << Q, sum_tp_ri << Q),
                                     denominator );
 
             neighbor->control_model.b =
-                            q_div(  q_mul(sum_ri << Q, sum_tp_squared << Q) -
-                                    q_mul(sum_tp << Q, sum_tp_ri << Q),
+                            q_div(  q_mul(sum_tp << Q, sum_tp_ri << Q) -
+                                    q_mul(sum_ri << Q, sum_tp_squared << Q),
                                     denominator );
 
-            atpc.cb->log("[atpc] Control model: "
-                        "sum_tp_squared = %d, sum_tp = %d, sum_ri = %d, "
-                        "sum_tp_ri: %d, a = %d/8, b = %d/8",
-                        sum_tp_squared, sum_tp, sum_ri, sum_tp_ri,
-                        neighbor->control_model.a, neighbor->control_model.b);
+#ifdef DEBUG
+            atpc.cb->log("[atpc] Control model of %x: "
+                "sum_tp_squared = %d, sum_tp = %d, sum_ri = %d, "
+                "sum_tp_ri: %d, a = %d/8, b = %d/8",
+                neighbor->short_addr, sum_tp_squared, sum_tp, sum_ri, sum_tp_ri,
+                neighbor->control_model.a, neighbor->control_model.b);
+            atpc.cb->log("ri = ([%d., %d., %d., %d., %d., %d., %d., %d.])",
+                            neighbor->rssi[0], neighbor->rssi[1],
+                            neighbor->rssi[2], neighbor->rssi[3],
+                            neighbor->rssi[4], neighbor->rssi[5],
+                            neighbor->rssi[6], neighbor->rssi[7],
+                            neighbor->rssi[8]);
+#endif
             
             neighbor->status = true;
         } else if(neighbor->update_model) {
@@ -433,13 +445,25 @@ static void state_run(void) {
             //          the current implementation the model is updated with
             //          each notification.
 
-            /* Update control model */
-            neighbor->control_model.b -= (int16_t)neighbor->delta_rssi << Q; 
+            /* Handle boundaries, preventing model to update in case the
+               RSSI using the lowest tx_power is still too high, or in case
+               it is too low even using the highest tx_power. */
+            int8_t curr_tp = atpc_get_tx_power(neighbor->short_addr);
+            if( ((curr_tp != atpc.tx_power[0]) &&
+                    (curr_tp != atpc.tx_power[atpc.tx_power_count - 1])) ||
+                ((curr_tp == atpc.tx_power[0]) && (neighbor->delta_rssi > 0)) ||
+                ((curr_tp == atpc.tx_power[atpc.tx_power_count - 1]) && 
+                    (neighbor->delta_rssi < 0)) ) {
+                /* Update control model */
+                neighbor->control_model.b -= (int16_t)neighbor->delta_rssi << Q; 
 
-            neighbor->update_model = false;
+                neighbor->update_model = false;
 
-            atpc.cb->log("[atpc] Model updated: b = %d/8",
-                            neighbor->control_model.b);
+#ifdef DEBUG
+                atpc.cb->log("[atpc] Model updated for %x: b = %d/8",
+                        neighbor->short_addr, neighbor->control_model.b);
+#endif
+            }
         }
     }
 

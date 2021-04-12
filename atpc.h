@@ -28,6 +28,13 @@ extern "C" {
 #endif
 
 typedef enum {
+    STATE_IDLE,
+    STATE_INIT,
+    STATE_RUN,
+    NUM_STATES
+} state_t;
+
+typedef enum {
     ATPC_BEACON_IND,
     ATPC_BEACON_RSP,
     ATPC_QUALITY_MONITOR,
@@ -61,6 +68,13 @@ typedef struct {
  */
 typedef bool (*atpc_send_msg_t)(uint16_t dest_addr, int8_t tx_power,
                                    uint8_t *data, uint16_t len);
+
+/*!
+ * @brief   Inform application of an ATPC state change.
+ *
+ * @param   state - FSM's current state.
+ */
+typedef void (*atpc_state_change_t)(state_t state);
 
 /*!
  * @brief   Linked list new list function pointer definition.
@@ -108,6 +122,7 @@ typedef void (*atpc_log_t)(const char *aFormat, ...);
 /* ATPC callbacks structure */
 typedef struct {
     atpc_send_msg_t send_msg;
+    atpc_state_change_t state_change;
     atpc_list_new_t list_new;
     atpc_list_add_t list_add;
     atpc_list_remove_t list_remove;
@@ -124,7 +139,7 @@ typedef struct {
  *          provided by external application.
  * @param   default_tx_power - value of default transmit power level.
  * @param   tx_power - pointer to array of possible transmit power values in the
- *          unit used by the platform.
+ *          unit used by the platform, sorted from lowest to highest.
  * @param   tx_power_count - number of possible transmit power values.
  * @param   rssi_setpoint - RSSI setpoint for the control model. 
  * @param   rssi_threshold_upper - upper value of RSSI threshold range for the
@@ -190,8 +205,9 @@ int8_t atpc_remove_neighbor(uint16_t short_addr);
 int8_t atpc_get_tx_power(uint16_t short_addr);
 
 /*!
- * @brief   Data indication callback. Called by external application when it
- *          receives an ATPC message.
+ * @brief   Data indication. Called by external application when it receives a
+ *          message, passing the proper data structure containing information
+ *          about the received message.
  *
  * @param   
  */
