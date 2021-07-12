@@ -15,45 +15,38 @@ packet reception rate.
 ## How to use
 
 1. Configure and start module by calling *atpc_conf*, providing the necessary 
-callbacks and transmission information. Set up your application in order to 
-call *atpc_data_ind* when it receives a message, passing the proper data 
-structure containing information about the received message. Register 
-neighbors within the ATPC module using *atpc_register_neighbor*. Examples for 
-*atpc_conf* and *atpc_data_ind* below:
+callbacks and transmission information. Register neighbors within the ATPC 
+module using *atpc_register_neighbor*. Set up application to call *atpc_data_ind* 
+when it receives a message, passing the proper data structure containing 
+information about the received message such as in the example below:
 
-    - *atpc_conf*:
-    atpc_conf(&atpc_cbs,
-        DEFAULT_TX_POWER, TX_POWER, sizeof(TX_POWER)/sizeof(int8_t),
-        RSSI_SETPOINT, RSSI_UPPER_THRESH, RSSI_LOWER_THRESH,
-        MULTICAST_ADDR , BEACON_TIMEOUT);
-
-    - *atpc_data_ind*:
-    static void handle_receive(uint16_t src_addr, int8_t rssi,
-                               void *buff, uint8_t length) {
-        atpc_data_ind_t data_ind;
-        atpc_msg_t msg;
-        data_ind.src_addr = src_addr;
-        data_ind.rssi = rssi;
-        switch(buff[0]) {
-            case APP_MSG:
-                msg.type = ATPC_QUALITY_MONITOR;
-                data_ind.data = &msg;
-                break;
-            case ATPC_MSG:
-                data_ind.data = (atpc_msg_t *)(buff + sizeof(app_msg_type_t));
-                break;
-            default:
-                break;
-        }
-        atpc_data_ind(&data_ind);
+``` { .c }
+static void handle_receive(uint16_t src_addr, int8_t rssi, void *buff, uint8_t length) {
+    atpc_data_ind_t data_ind;
+    atpc_msg_t msg;
+    data_ind.src_addr = src_addr;
+    data_ind.rssi = rssi;
+    switch(buff[0]) {
+        case APP_MSG:
+            msg.type = ATPC_QUALITY_MONITOR;
+            data_ind.data = &msg;
+            break;
+        case ATPC_MSG:
+            data_ind.data = (atpc_msg_t *)(buff + sizeof(app_msg_type_t));
+            break;
+        default:
+            break;
     }
+    atpc_data_ind(&data_ind);
+}
+```
 
-3. Initialize ATPC beacons by calling *atpc_init*. This may not be necessary in
+2. Initialize ATPC beacons by calling *atpc_init*. This may not be necessary in
 case of a full function device (FFD) that only monitors messages from reduced 
 function devices (RFDs), replying with ATPC notifications. Application should 
-manage the timing of the initialization of devices appropriately.
+manage the initialization timing of devices appropriately.
 
-4. Execute internal state machine with *atpc_process* - call it periodically 
+3. Execute internal state machine with *atpc_process* - call it periodically 
 until initialization is completed, then call it to update the control model 
 of neighbors whenever it may be necessary. Keep your neighbor list updated 
 through *atpc_register_neighbor* and *atpc_remove_neighbor* as needed. Use 
