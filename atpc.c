@@ -27,7 +27,7 @@
  *****************************************************************************/
 
 #define DEBUG
-#undef DEBUG
+//#undef DEBUG
 
 /* Number of bits of fractional part of Qm.n format numbers */
 #define Q   3 // Q.3 format number
@@ -375,8 +375,8 @@ static void state_init(void) {
 
     if(atpc.beacon_idx < atpc.tx_power_count) {
 #ifdef DEBUG
-        atpc.cb->log("[atpc] sending beacon %d, power level %d dBm",
-                      atpc.beacon_idx, atpc.tx_power[atpc.beacon_idx]);
+        atpc.cb->log("[atpc] Sending beacon at power level %d dBm",
+                      atpc.tx_power[atpc.beacon_idx]);
 #endif
         atpc.msg.type = ATPC_BEACON_IND;
         atpc.msg.power_level = atpc.tx_power[atpc.beacon_idx];
@@ -426,17 +426,9 @@ static void state_run(void) {
                                     denominator );
 
 #ifdef DEBUG
-            atpc.cb->log("[atpc] Control model of %x: "
-                "sum_tp_squared = %d, sum_tp = %d, sum_ri = %d, "
-                "sum_tp_ri: %d, a = %d/8, b = %d/8",
-                neighbor->short_addr, sum_tp_squared, sum_tp, sum_ri, sum_tp_ri,
-                neighbor->control_model.a, neighbor->control_model.b);
-            atpc.cb->log("ri = ([%d., %d., %d., %d., %d., %d., %d., %d.])",
-                            neighbor->rssi[0], neighbor->rssi[1],
-                            neighbor->rssi[2], neighbor->rssi[3],
-                            neighbor->rssi[4], neighbor->rssi[5],
-                            neighbor->rssi[6], neighbor->rssi[7],
-                            neighbor->rssi[8]);
+            atpc.cb->log("[atpc] Control model of %x: a = %d/8, b = %d/8",
+                neighbor->short_addr, neighbor->control_model.a,
+                neighbor->control_model.b);
 #endif
             
             neighbor->status = true;
